@@ -1,0 +1,51 @@
+{
+  "name": "spreadsheet",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Windows desktop build of the Spreadsheet app",
+  "author": "Puter",
+  "license": "AGPL-3.0-only",
+  "main": "main.cjs",
+  "scripts": {
+    "dist": "electron-builder --win nsis --x64"
+  },
+  "devDependencies": {
+    "electron": "45.1.0",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "com.puter.spreadsheet",
+    "productName": "Spreadsheet",
+    "executableName": "Spreadsheet",
+    "asar": true,
+    "compression": "normal",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.cjs",
+      "dist/**/*"
+    ],
+    "win": {
+      "icon": "icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Spreadsheet",
+      "artifactName": "Spreadsheet-Setup-${version}.${ext}"
+    }
+  }
+}

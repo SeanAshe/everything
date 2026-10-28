@@ -1,0 +1,117 @@
+name: Release Spreadsheet for Windows
+
+# Builds src/spreadsheet and publishes a Windows NSIS installer (.exe) as a
+# GitHub Release. The installer is not code-signed.
+#
+# Run it by hand (Actions → this workflow → Run workflow), or push a tag
+# named spreadsheet-v<semver>, for example spreadsheet-v1.2.0.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Semver for the installer and release tag (example: 1.2.0). Defaults to src/spreadsheet/package.json.'
+        required: false
+        type: string
+  push:
+    tags:
+      - 'spreadsheet-v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-spreadsheet-windows
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build installer and publish
+    runs-on: windows-latest
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            src/spreadsheet/package-lock.json
+            .github/packaging/spreadsheet-windows/package-lock.json
+
+      - name: Install and build the web app
+        working-directory: src/spreadsheet
+        run: |
+          npm ci
+          npm run build
+
+      - name: Resolve release version
+        id: version
+        shell: pwsh
+        run: |
+          $pkg = Get-Content src/spreadsheet/package.json -Raw | ConvertFrom-Json
+          if ("${{ github.event_name }}" -eq "push") {
+            $version = "${{ github.ref_name }}" -replace '^spreadsheet-v', ''
+          } elseif ("${{ inputs.version }}" -ne "") {
+            $version = "${{ inputs.version }}".Trim()
+          } else {
+            $version = $pkg.version
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$') {
+            throw "Version must be semver (major.minor.patch), got: $version"
+          }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$version" -Encoding utf8NoBOM
+          if ("${{ github.event_name }}" -eq "push") {
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "tag=${{ github.ref_name }}" -Encoding utf8NoBOM
+          } else {
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "tag=spreadsheet-v$version" -Encoding utf8NoBOM
+          }
+
+      - name: Stage the desktop package
+        shell: pwsh
+        run: |
+          $dest = ".github/packaging/spreadsheet-windows"
+          if (Test-Path "$dest/dist") { Remove-Item -Recurse -Force "$dest/dist" }
+          Copy-Item -Recurse -Force src/spreadsheet/dist "$dest/dist"
+          Copy-Item -Force src/spreadsheet/public/icons/icon-512.png "$dest/icon.png"
+
+      - name: Pack the NSIS installer
+        working-directory: .github/packaging/spreadsheet-windows
+        shell: pwsh
+        run: |
+          npm ci
+          npm pkg set version="${{ steps.version.outputs.version }}"
+          npx electron-builder --win nsis --x64
+          $exe = Get-ChildItem release -Filter "Spreadsheet-Setup-*.exe" | Select-Object -First 1
+          if (-not $exe) { throw "Installer exe was not produced" }
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        shell: pwsh
+        working-directory: .github/packaging/spreadsheet-windows
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $exe = Get-ChildItem release -Filter "Spreadsheet-Setup-*.exe" | Select-Object -First 1
+          if (-not $exe) { throw "Installer exe was not produced" }
+          $notes = @"
+          Windows installer for Spreadsheet $env:VERSION.
+
+          Download Spreadsheet-Setup-$env:VERSION.exe and run it. Setup installs the app for the current user and adds Start menu and desktop shortcuts.
+
+          The installer is not code-signed, so Windows SmartScreen may warn before you choose to run it.
+          "@
+          $notes = (($notes -split "\r?\n") | ForEach-Object { $_.Trim() }) -join "`n"
+          [System.IO.File]::WriteAllText("$pwd/release-notes.md", $notes + "`n")
+
+          gh release view $env:TAG --json tagName | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:TAG $exe.FullName --clobber
+          } else {
+            gh release create $env:TAG $exe.FullName --title "Spreadsheet $env:VERSION" --notes-file release-notes.md --target "${{ github.sha }}"
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
