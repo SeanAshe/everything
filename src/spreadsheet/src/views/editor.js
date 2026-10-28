@@ -5809,7 +5809,7 @@ export function editorView({ doc, goHome, openPath, newDoc, templateDoc, importF
     if (grid.editing && !grid.commitEdit()) return false;
     if (doc.status === 'saved' && !doc.hasPendingWrites) return true;
     doc.writeDraft();
-    if (session.signedOut && wb.dirty) {
+    if (session.signedOut && wb.dirty && !doc.desktopFile) {
       if (abandoned) return true;
       // Nowhere to write without a session: keep editing, leave the edits to
       // the local draft, or sign in so the save below can go through.
@@ -6004,8 +6004,8 @@ export function editorView({ doc, goHome, openPath, newDoc, templateDoc, importF
 
   async function saveNow() {
     if (grid.editing && !grid.commitEdit()) return;
-    // Saving needs a session; Puter's own dialog asks for it, then the save goes ahead.
-    if (session.signedOut && (!await session.signIn() || destroyed)) return;
+    // A workbook Windows opened is written back to that file. Anything else is saved to Puter, which asks for a sign-in first.
+    if (!doc.desktopFile && session.signedOut && (!await session.signIn() || destroyed)) return;
     try {
       const saved = await doc.save();
       if (saved && !wb.dirty) toast('Saved', { icon: 'cloud', duration: 1200 });
@@ -6342,7 +6342,7 @@ export function editorView({ doc, goHome, openPath, newDoc, templateDoc, importF
   // Beside the name while several sheets are grouped: what is typed lands on all of them.
   const groupBadge = el('span.doc-group-badge', { hidden: true, title: 'Several sheets are grouped: edits apply to each of them. Click a sheet outside the group, or right-click a tab, to ungroup.' }, '[Group]');
   // A plain status while signed in; without a session it is the button that starts the sign-in and the save.
-  const status = el('button.save-status', { type: 'button', 'aria-live': 'polite', disabled: true, onclick: () => { if (session.signedOut || doc.asksWhereToSave) run('save'); } });
+  const status = el('button.save-status', { type: 'button', 'aria-live': 'polite', disabled: true, onclick: () => { if ((session.signedOut && !doc.desktopFile) || doc.asksWhereToSave) run('save'); } });
   const searchBtn = el('button.icon-btn.desktop-only', { type: 'button', html: icon('search', 20), 'aria-label': 'Search the menus', title: `Search the menus (${MOD_KEY}+Shift+P)`, onclick: () => run('palette') });
   const avatar = el('button.icon-btn.user-btn', {
     type: 'button', 'aria-label': 'Account menu', 'aria-haspopup': 'menu',
@@ -6390,7 +6390,7 @@ export function editorView({ doc, goHome, openPath, newDoc, templateDoc, importF
       status.title = title;
       return;
     }
-    if (session.signedOut) {
+    if (session.signedOut && !doc.desktopFile) {
       // Nowhere to write yet: the pill invites the sign-in that saving needs. The edits are normally copied into
       // this browser's draft meanwhile; when they could not be (the book outgrew local storage), it says so here
       // too, since a closed tab would then lose them.
@@ -6904,7 +6904,17 @@ export function editorView({ doc, goHome, openPath, newDoc, templateDoc, importF
         confirmLabel: 'Overwrite with mine', cancelLabel: 'Reload theirs', danger: true, dismissValue: null,
       });
       if (overwrite) await doc.forceSave().catch(() => {});
-      else if (overwrite === false) { wb.markClean(); openPath(doc.path, { reload: true }); }
+      else if (overwrite === false) {
+        wb.markClean();
+        if (doc.desktopFile) {
+          const res = await fetch(`/__desktop/file/${encodeURIComponent(doc.desktopFile)}`);
+          if (res.ok) {
+            const file = new File([await res.arrayBuffer()], `${doc.name}.xlsx`);
+            file.desktopToken = doc.desktopFile;
+            importFile(file);
+          }
+        } else openPath(doc.path, { reload: true });
+      }
     } finally { conflictOpen = false; }
   };
   doc.addEventListener('conflict', onConflict);

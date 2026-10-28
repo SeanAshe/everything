@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseAppHash, editHash, rangeLink } from '../src/lib/links.js';
+import { parseAppHash, editHash, rangeLink, fileLink } from '../src/lib/links.js';
 import { parseRange } from '../src/core/cell.js';
 
 describe('app addresses', () => {
@@ -32,5 +32,14 @@ describe('app addresses', () => {
     const parsed = parseAppHash(url.slice(url.indexOf('#')));
     expect(parsed).toEqual({ route: 'edit', path: 'Spreadsheets/Budget.xlsx', range: "'Q1 Data'!B4:C9" });
     expect(rangeLink({ origin: 'https://s.example', pathname: '/app/' }, 'Spreadsheets/A.xlsx', 'Sheet1', parseRange('A1:A1'))).toMatch(/^https:\/\/s\.example\/app\/#\/edit\/Spreadsheets%2FA\.xlsx\?range=Sheet1!A1/);
+  });
+
+  it('points links copied from the desktop app at the published site', () => {
+    const here = { origin: 'http://localhost:47653', pathname: '/index.html' };
+    expect(fileLink(here, 'uid-1')).toBe('https://spreadsheet.puter.com/#/file/uid-1');
+    expect(rangeLink(here, 'Spreadsheets/Budget.xlsx', 'Sheet1', parseRange('A1:A1'))).toBe('https://spreadsheet.puter.com/#/edit/Spreadsheets%2FBudget.xlsx?range=Sheet1!A1');
+    expect(fileLink({ origin: 'http://127.0.0.1:47653', pathname: '/' }, 'uid-1')).toBe('https://spreadsheet.puter.com/#/file/uid-1');
+    // The dev server's own name stays, so a link copied there still opens that server.
+    expect(fileLink({ origin: 'http://spreadsheet.puter.localhost:5173', pathname: '/' }, 'uid-1')).toBe('http://spreadsheet.puter.localhost:5173/#/file/uid-1');
   });
 });

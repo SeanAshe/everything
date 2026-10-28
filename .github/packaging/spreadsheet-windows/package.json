@@ -24,7 +24,19 @@
     },
     "files": [
       "main.cjs",
+      "preload.cjs",
+      "serve-dist.cjs",
+      "open-file.cjs",
+      "desktop-files.cjs",
       "dist/**/*"
+    ],
+    "fileAssociations": [
+      {
+        "ext": ["xlsx", "xlsm", "xls", "xltx", "xltm", "csv", "tsv", "ods", "xlsb", "fods"],
+        "name": "Spreadsheet.Workbook",
+        "description": "Spreadsheet",
+        "role": "Editor"
+      }
     ],
     "win": {
       "icon": "icon.png",

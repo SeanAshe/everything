@@ -326,6 +326,7 @@ async function route({ reload = false, file = null, draftKey = null } = {}) {
  * Puter is asked for a sign-in at the first action that needs the cloud.
  */
 async function start() {
+  watchDesktopFiles();
   if (!P.hasSDK()) {
     show(errorView('Could not reach Puter', 'Puter could not be loaded. Check your connection and try again.', () => location.reload()));
     return;
@@ -410,6 +411,47 @@ function imageType(name) {
 }
 
 let booted = false;
+
+/** A workbook Windows opened with this program: `{ token, name, writable }`. Absent in the browser. */
+function desktopBridge() {
+  return globalThis.spreadsheetDesktop || null;
+}
+
+async function fileFromDesktop(info) {
+  const res = await fetch(`/__desktop/file/${encodeURIComponent(info.token)}`);
+  if (!res.ok) throw new Error(`Could not read ${info.name}`);
+  const file = new File([await res.arrayBuffer()], info.name);
+  if (info.writable) file.desktopToken = info.token;
+  return file;
+}
+
+let desktopWatching = false;
+function watchDesktopFiles() {
+  const desktop = desktopBridge();
+  if (!desktop?.onOpenFile || desktopWatching) return;
+  desktopWatching = true;
+  desktop.onOpenFile((info) => { openDesktopFile(info); });
+}
+
+async function openDesktopFile(info) {
+  if (!info?.token) return;
+  let file;
+  try { file = await fileFromDesktop(info); }
+  catch (e) {
+    console.error(e);
+    toast(e?.message || 'Could not open the file', { icon: 'alert', duration: 5000 });
+    return;
+  }
+  if (!isSpreadsheetFile(file.name)) {
+    toast(`Cannot open ${file.name}. Open a spreadsheet (.xlsx, .csv, .ods, …)`, { icon: 'info', duration: 4000 });
+    return;
+  }
+  if (!booted) { droppedFile = file; return; }
+  closeMenu();
+  closeAllModals();
+  route({ file });
+}
+
 async function boot() {
   showLoading('Loading…');
   await session.init();
@@ -418,8 +460,15 @@ async function boot() {
   // The person's options (File ▸ Options), with the account's copy when it arrives quickly enough to matter.
   installAppOptions();
   if (session.signedIn) await Promise.race([syncAppOptions().catch(() => {}), new Promise((resolve) => setTimeout(resolve, 800))]);
+  // Windows "Open with" / double-click: the shell passed a workbook, which becomes this window's first screen.
+  watchDesktopFiles();
+  const opened = await desktopBridge()?.takeLaunchFile?.().catch(() => null);
+  if (opened) {
+    try { droppedFile = await fileFromDesktop(opened); }
+    catch (e) { console.error(e); toast(e?.message || 'Could not open the file', { icon: 'alert', duration: 5000 }); }
+  }
   // Opened with no address, the app lands on a new workbook, or on the start screen when the options ask for it.
-  if (!launchedPath && appOption('startScreen') && /^#?\/?$/.test(location.hash)) history.replaceState(null, '', HOME);
+  if (!launchedPath && !droppedFile && appOption('startScreen') && /^#?\/?$/.test(location.hash)) history.replaceState(null, '', HOME);
   booted = true;
   window.addEventListener('hashchange', route);
   if (launchedPath) {

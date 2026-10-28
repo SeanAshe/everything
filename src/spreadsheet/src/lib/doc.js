@@ -559,12 +559,18 @@ export class Doc extends EventTarget {
     setAutoSaveEnabled(!!on);
     // Off, an edit's AutoSave still waiting is dropped too; a retry of a failed save keeps going, as it does after Save.
     if (!on && !this._timerIsRetry) { clearTimeout(this._timer); this._sharedFileDue = false; }
-    if (on && this.wb.dirty && !session.signedOut) this.save({ auto: true }).catch(() => {});
+    if (on && this.wb.dirty && (!session.signedOut || this.desktopFile)) this.save({ auto: true }).catch(() => {});
     this.dispatchEvent(new CustomEvent('autosave', { detail: { on: !!on } }));
   }
 
   /** Save now. Returns true when the file was written. */
   save({ auto = false, retry = false } = {}) {
+    // Opened from Windows (Open with, or double-click): the .xlsx on disk is the file, with or without a Puter session.
+    if (this.desktopFile) {
+      clearTimeout(this._timer);
+      if (!retry) this._retryDelay = 0;
+      return this._enqueueWrite(() => this._saveDesktop(auto));
+    }
     if (this.collab) return this._enqueueWrite(() => this._saveShared({ auto }));
     clearTimeout(this._timer);
     if (!retry) this._retryDelay = 0; // an edit, a save asked for, or coming back online starts the retries over
@@ -611,7 +617,48 @@ export class Doc extends EventTarget {
   /** Save even if the file changed elsewhere (the user chose to overwrite). */
   forceSave() {
     clearTimeout(this._timer);
+    if (this.desktopFile) return this._enqueueWrite(() => this._saveDesktop(false, true));
     return this._enqueueWrite(() => this._doSave(false, true));
+  }
+
+  /** Write this workbook back to the .xlsx Windows opened. `force` overwrites a copy that changed on disk. */
+  async _saveDesktop(auto, force = false) {
+    if (!this.wb.dirty && auto) {
+      if (this.status === 'error' || this.status === 'offline') this._setStatus('saved');
+      return true;
+    }
+    try {
+      this._setStatus('saving');
+      const exportedVersion = this.wb.version;
+      const blob = this._exported?.wb === this.wb && this._exported.version === exportedVersion ? this._exported.blob : await workbookToXlsx(this.wb);
+      this._exported = { wb: this.wb, version: exportedVersion, blob };
+      const res = await fetch(`/__desktop/file/${encodeURIComponent(this.desktopFile)}${force ? '?force=1' : ''}`, { method: 'PUT', body: blob });
+      if (res.status === 409) {
+        this._setStatus('conflict', 'This file changed elsewhere');
+        this.dispatchEvent(new CustomEvent('conflict', { detail: { kind: 'changed' } }));
+        return false;
+      }
+      if (!res.ok) throw new Error('Could not save this spreadsheet');
+      this.lastSaved = Date.now();
+      this._retryDelay = 0;
+      if (this.wb.version === exportedVersion) this.wb.markClean();
+      this._setStatus(this.wb.dirty ? 'unsaved' : 'saved');
+      if (this.wb.dirty) { this._changed('cells'); this.writeDraft(); }
+      else this._clearOwnDraft(null);
+      trackEvent('Spreadsheet Saved', { method: auto ? 'auto' : 'manual' });
+      return true;
+    } catch (e) {
+      console.error(e);
+      const reason = e?.message || String(e);
+      this._setStatus('error', reason);
+      if (this.wb.dirty && !this._destroyed) {
+        this._retryDelay = Math.min(this._retryDelay ? this._retryDelay * 2 : RETRY_MS, RETRY_MAX_MS);
+        this._timer = setTimeout(() => this.save({ auto: true, retry: true }).catch(() => {}), this._retryDelay);
+        this._timerIsRetry = true;
+      }
+      if (!auto) throw e?.message ? e : new Error(reason, { cause: e });
+      return false;
+    }
   }
 
   async _doSave(auto, force = false) {
@@ -853,6 +900,30 @@ export class Doc extends EventTarget {
     return true;
   }
 
+  /** Rename the .xlsx Windows opened. The name in the title follows the name on disk. */
+  async _renameDesktop(clean) {
+    let res;
+    try {
+      res = await fetch(`/__desktop/rename/${encodeURIComponent(this.desktopFile)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: clean }),
+      });
+    } catch (e) {
+      console.error(e);
+      return 'Could not rename this spreadsheet';
+    }
+    if (res.status === 409) return 'A file with that name already exists';
+    if (!res.ok) return 'Could not rename this spreadsheet';
+    const body = await res.json().catch(() => ({}));
+    const oldKey = this.draftKey;
+    this.name = body.name || clean;
+    this._recoveredDraftKey = null;
+    this._moveDraft(oldKey);
+    this.dispatchEvent(new CustomEvent('path', { detail: { path: null, name: this.name } }));
+    return null;
+  }
+
   /** Rename the file (and the document). Returns null or an error message. */
   rename(newName) {
     return this._enqueueWrite(() => this._rename(newName));
@@ -862,6 +933,7 @@ export class Doc extends EventTarget {
     const clean = P.sanitizeName(newName).replace(/\.xlsx$/i, '');
     if (!clean) return 'Enter a name';
     if (clean === this.name) return null;
+    if (this.desktopFile) return this._renameDesktop(clean);
     // A shared workbook is its owner's file: renamed here alone, the name would change in this title bar and nowhere else.
     if (this.collab && !this.path) return 'This shared workbook is its owner’s file: only its owner can rename it';
     if (!this.path) {
@@ -1377,11 +1449,16 @@ export class Doc extends EventTarget {
     return doc;
   }
 
-  /** From a browser File (device import). Saves as a new file on first change. */
+  /** From a browser File (device import). Saves as a new file on first change.
+   * A workbook Windows opened (.xlsx) keeps that file: it is already saved, and later saves write it back. */
   static async fromBrowserFile(file) {
     const wb = await workbookFromFile(await file.arrayBuffer(), file.name);
     // The name the file will be saved under; one with nothing left once sanitized ("...csv") is untitled.
     const doc = new Doc({ wb, name: P.sanitizeName(stripExtension(file.name)) || UNTITLED, path: null, trusted: false });
+    if (file.desktopToken) {
+      doc.desktopFile = file.desktopToken;
+      return doc;
+    }
     // An import is worth keeping even before the first edit.
     doc.wb.dirty = true;
     doc._changed('cells');

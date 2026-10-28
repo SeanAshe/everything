@@ -47,8 +47,27 @@ export function editHash(path, range = null) {
   return `#/edit/${encodeURIComponent(path)}${range ? `?range=${encodeURIComponent(range)}` : ''}`;
 }
 
+/**
+ * The published app. The desktop build is served from a loopback port so Puter
+ * has an origin to sign in; a link copied there has to open this site, where
+ * the people it is shared with can actually reach it.
+ */
+const PUBLISHED_ORIGIN = 'https://spreadsheet.puter.com';
+
+function linkBase(where) {
+  const origin = where?.origin || '';
+  const pathname = where?.pathname ?? '/';
+  let host = '';
+  try { host = new URL(origin).hostname; } catch { /* an origin that is not a URL is used as given */ }
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]') {
+    return { origin: PUBLISHED_ORIGIN, pathname: '/' };
+  }
+  return { origin, pathname };
+}
+
 /** A full address that opens `path` with the range on `sheetName` selected. */
-export function rangeLink({ origin, pathname }, path, sheetName, range) {
+export function rangeLink(where, path, sheetName, range) {
+  const { origin, pathname } = linkBase(where);
   return `${origin}${pathname}${editHash(path, `${quoteSheet(sheetName)}!${rangeName(range)}`)}`;
 }
 
@@ -56,7 +75,8 @@ export function rangeLink({ origin, pathname }, path, sheetName, range) {
  * A full address that opens a shared workbook (`client`, see collab/client.js) for the people in it, at `range`
  * ("Sheet1!B4") when given: the owner's file opens alone for whoever it is shared with, outside the shared workbook.
  */
-export function roomLink({ origin, pathname }, client, range = null) {
+export function roomLink(where, client, range = null) {
+  const { origin, pathname } = linkBase(where);
   const link = shareLink(`${origin}${pathname}`, { server: client.o.server, room: client.room });
   return range ? `${link}&range=${encodeURIComponent(range)}` : link;
 }
@@ -65,6 +85,7 @@ export function roomLink({ origin, pathname }, client, range = null) {
  * A full address that opens the file with this id, wherever the drive of whoever follows it shows it; with
  * `range` ("Sheet1!B4"), at those cells.
  */
-export function fileLink({ origin, pathname }, uid, range = null) {
+export function fileLink(where, uid, range = null) {
+  const { origin, pathname } = linkBase(where);
   return `${origin}${pathname}#/file/${encodeURIComponent(uid)}${range ? `?range=${encodeURIComponent(range)}` : ''}`;
 }
